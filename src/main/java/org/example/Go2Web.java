@@ -5,7 +5,12 @@ import java.net.Socket;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -14,8 +19,12 @@ import javax.net.ssl.SSLSocketFactory;
 
 public class Go2Web {
     private static final int MAX_REDIRECTS = 5;
+    private static final String CACHE_DIR = System.getProperty("user.home") + File.separator + ".go2web" + File.separator + "cache" + File.separator;
+    private static final long CACHE_TTL = 3600000; // 1 hour in milliseconds
 
     public static void main(String[] args) {
+        createCacheDir();
+
         if (args.length == 0 || (args.length == 1 && args[0].equals("-h"))) {
             printHelp();
             return;
@@ -43,6 +52,13 @@ public class Go2Web {
         } else {
             System.err.println("Invalid arguments");
             printHelp();
+        }
+    }
+
+    private static void createCacheDir() {
+        File cacheDir = new File(CACHE_DIR);
+        if (!cacheDir.exists()) {
+            cacheDir.mkdirs();
         }
     }
 
@@ -177,6 +193,15 @@ public class Go2Web {
             throw new IOException("Too many redirects");
         }
 
+        // Check cache first
+        String cacheKey = generateCacheKey(urlString);
+        File cacheFile = new File(CACHE_DIR + cacheKey);
+
+        if (cacheFile.exists() && isValidCache(cacheFile)) {
+            System.out.println("Using cached version of: " + urlString);
+            return readFromCache(cacheFile);
+        }
+
         URI uri = new URI(urlString);
         String host = uri.getHost();
         int port = uri.getPort() == -1 ? (uri.getScheme().equals("https") ? 443 : 80) : uri.getPort();
@@ -197,7 +222,8 @@ public class Go2Web {
             String request = "GET " + path + " HTTP/1.1\r\n" +
                     "Host: " + host + "\r\n" +
                     "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36\r\n" +
-                    "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n" +
+                    "Accept: text/html,application/xhtml+xml,application/json,*/*;q=0.8\r\n" +
+                    "Accept-Language: en-US,en;q=0.5\r\n" +
                     "Connection: close\r\n\r\n";
 
             OutputStream out = socket.getOutputStream();
@@ -223,6 +249,8 @@ public class Go2Web {
             String headers = fullResponse.substring(0, headerEnd + 4);
             String body = fullResponse.substring(headerEnd + 4);
 
+            HttpResponse response = new HttpResponse(headers, body);
+
             if (headers.contains("HTTP/1.1 301") || headers.contains("HTTP/1.1 302") ||
                     headers.contains("HTTP/1.1 303") || headers.contains("HTTP/1.1 307") ||
                     headers.contains("HTTP/1.1 308") ||
@@ -238,11 +266,50 @@ public class Go2Web {
                 }
             }
 
-            return new HttpResponse(headers, body);
+            // Save to cache
+            saveToCache(cacheFile, response);
+
+            return response;
         } finally {
             if (socket != null) {
                 socket.close();
             }
+        }
+    }
+
+    private static String generateCacheKey(String url) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(url.getBytes(StandardCharsets.UTF_8));
+            return Base64.getEncoder().encodeToString(hash).replaceAll("[^a-zA-Z0-9]", "_");
+        } catch (NoSuchAlgorithmException e) {
+            return url.replaceAll("[^a-zA-Z0-9]", "_");
+        }
+    }
+
+    private static boolean isValidCache(File cacheFile) {
+        return System.currentTimeMillis() - cacheFile.lastModified() < CACHE_TTL;
+    }
+
+    private static HttpResponse readFromCache(File cacheFile) throws IOException {
+        String content = new String(Files.readAllBytes(cacheFile.toPath()), StandardCharsets.UTF_8);
+        int separatorIndex = content.indexOf("\r\n\r\n");
+        if (separatorIndex == -1) {
+            throw new IOException("Invalid cache format");
+        }
+
+        String headers = content.substring(0, separatorIndex + 4);
+        String body = content.substring(separatorIndex + 4);
+
+        return new HttpResponse(headers, body);
+    }
+
+    private static void saveToCache(File cacheFile, HttpResponse response) {
+        try {
+            String content = response.headers + response.body;
+            Files.write(cacheFile.toPath(), content.getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            System.err.println("Warning: Failed to cache response: " + e.getMessage());
         }
     }
 
