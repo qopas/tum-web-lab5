@@ -5,6 +5,8 @@ import java.net.Socket;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.net.ssl.SSLSocket;
@@ -28,7 +30,11 @@ public class Go2Web {
                     handleUrlOption(value);
                     break;
                 case "-s":
-                    System.out.println("Search option is not implemented yet.");
+                    StringBuilder searchTerm = new StringBuilder(value);
+                    for (int i = 2; i < args.length; i++) {
+                        searchTerm.append(" ").append(args[i]);
+                    }
+                    handleSearchOption(searchTerm.toString());
                     break;
                 default:
                     System.err.println("Unknown option: " + option);
@@ -58,6 +64,112 @@ public class Go2Web {
             System.err.println("Error making HTTP request: " + e.getMessage());
             e.printStackTrace();
         }
+    }
+
+    private static void handleSearchOption(String searchTerm) {
+        try {
+            String encodedSearchTerm = searchTerm.replace(" ", "+");
+            String searchUrl = "https://html.duckduckgo.com/html/?q=" + encodedSearchTerm;
+
+            System.out.println("Searching for: " + searchTerm);
+            HttpResponse response = makeHttpRequest(searchUrl, 0);
+            List<SearchResult> results = extractSearchResults(response.body);
+
+            if (results.isEmpty()) {
+                System.out.println("No search results found. Try another search term.");
+                return;
+            }
+
+            int count = 0;
+            for (SearchResult result : results) {
+                if (count >= 10) break;
+                System.out.println((++count) + ". " + result.title);
+                System.out.println("   URL: " + result.url);
+                if (!result.description.isEmpty()) {
+                    System.out.println("   " + result.description);
+                }
+                System.out.println();
+            }
+
+            if (!results.isEmpty()) {
+                System.out.print("Enter result number to view (or 0 to exit): ");
+                BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
+                try {
+                    String input = reader.readLine();
+                    int selection = Integer.parseInt(input);
+                    if (selection > 0 && selection <= results.size()) {
+                        handleUrlOption(results.get(selection - 1).url);
+                    }
+                } catch (NumberFormatException e) {
+                    System.err.println("Invalid selection");
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Error searching: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private static List<SearchResult> extractSearchResults(String html) {
+        List<SearchResult> results = new ArrayList<>();
+
+        try {
+            Pattern resultPattern = Pattern.compile("<div class=\"result[^\"]*\"[^>]*>(.*?)</div>\\s*</div>", Pattern.DOTALL);
+            Matcher resultMatcher = resultPattern.matcher(html);
+
+            while (resultMatcher.find()) {
+                String resultHtml = resultMatcher.group(1);
+
+                String url = "";
+                Pattern urlPattern = Pattern.compile("href=\"([^\"]+)\"");
+                Matcher urlMatcher = urlPattern.matcher(resultHtml);
+                if (urlMatcher.find()) {
+                    url = urlMatcher.group(1);
+
+                    if (url.startsWith("/") || url.contains("duckduckgo.com/")) {
+                        continue;
+                    }
+                }
+
+                String title = "";
+                Pattern titlePattern = Pattern.compile("<a[^>]*class=\"result__a\"[^>]*>(.*?)</a>", Pattern.DOTALL);
+                Matcher titleMatcher = titlePattern.matcher(resultHtml);
+                if (titleMatcher.find()) {
+                    title = cleanHtmlContent(titleMatcher.group(1));
+                }
+
+                String description = "";
+                Pattern descPattern = Pattern.compile("<a[^>]*class=\"result__snippet\"[^>]*>(.*?)</a>", Pattern.DOTALL);
+                Matcher descMatcher = descPattern.matcher(resultHtml);
+                if (descMatcher.find()) {
+                    description = cleanHtmlContent(descMatcher.group(1));
+                }
+
+                if (!url.isEmpty() && !title.isEmpty()) {
+                    results.add(new SearchResult(title, url, description));
+                }
+            }
+
+            if (results.isEmpty()) {
+                Pattern altPattern = Pattern.compile("<div[^>]*>(.*?)<a[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>.*?</div>", Pattern.DOTALL);
+                Matcher altMatcher = altPattern.matcher(html);
+
+                while (altMatcher.find()) {
+                    String url = altMatcher.group(2);
+                    String title = cleanHtmlContent(altMatcher.group(3));
+
+                    if (url.startsWith("/") || url.contains("duckduckgo.com/") || url.contains("javascript:")) {
+                        continue;
+                    }
+
+                    results.add(new SearchResult(title, url, ""));
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Error extracting search results: " + e.getMessage());
+        }
+
+        return results;
     }
 
     private static HttpResponse makeHttpRequest(String urlString, int redirectCount) throws IOException, URISyntaxException {
@@ -177,6 +289,18 @@ public class Go2Web {
         HttpResponse(String headers, String body) {
             this.headers = headers;
             this.body = body;
+        }
+    }
+
+    static class SearchResult {
+        String title;
+        String url;
+        String description;
+
+        SearchResult(String title, String url, String description) {
+            this.title = title;
+            this.url = url;
+            this.description = description;
         }
     }
 }
