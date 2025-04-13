@@ -74,12 +74,29 @@ public class Go2Web {
             if (!url.startsWith("http://") && !url.startsWith("https://")) {
                 url = "http://" + url;
             }
+            System.out.println("Fetching content from: " + url);
             HttpResponse response = makeHttpRequest(url, 0);
-            System.out.println(cleanHtmlContent(response.body));
+
+            // Get the title if it's HTML
+            String title = extractTitle(response.body);
+            if (title != null && !title.isEmpty()) {
+                System.out.println("\n===== " + title + " =====\n");
+            }
+
+            System.out.println(formatResponse(response));
         } catch (Exception e) {
             System.err.println("Error making HTTP request: " + e.getMessage());
             e.printStackTrace();
         }
+    }
+
+    private static String extractTitle(String html) {
+        Pattern pattern = Pattern.compile("<title[^>]*>(.*?)</title>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+        Matcher matcher = pattern.matcher(html);
+        if (matcher.find()) {
+            return cleanHtmlContent(matcher.group(1));
+        }
+        return null;
     }
 
     private static void handleSearchOption(String searchTerm) {
@@ -219,11 +236,16 @@ public class Go2Web {
                 socket = new Socket(host, port);
             }
 
+            // More realistic user agent
+            String userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36";
+
+            // Create the HTTP request with better headers for content negotiation
             String request = "GET " + path + " HTTP/1.1\r\n" +
                     "Host: " + host + "\r\n" +
-                    "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36\r\n" +
-                    "Accept: text/html,application/xhtml+xml,application/json,*/*;q=0.8\r\n" +
+                    "User-Agent: " + userAgent + "\r\n" +
+                    "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7\r\n" +
                     "Accept-Language: en-US,en;q=0.5\r\n" +
+                    "Accept-Encoding: identity\r\n" +  // No compression to keep it simple
                     "Connection: close\r\n\r\n";
 
             OutputStream out = socket.getOutputStream();
@@ -322,17 +344,79 @@ public class Go2Web {
         return null;
     }
 
+    private static String formatResponse(HttpResponse response) {
+        String contentType = extractHeader(response.headers, "Content-Type");
+
+        if (contentType != null) {
+            if (contentType.toLowerCase().contains("application/json")) {
+                return formatJson(response.body);
+            } else if (contentType.toLowerCase().contains("text/html")) {
+                return cleanHtmlContent(response.body);
+            }
+        }
+
+        // Default fallback - just clean it up
+        return cleanHtmlContent(response.body);
+    }
+
+    private static String formatJson(String json) {
+        // Simple pretty-print for JSON
+        json = json.trim();
+        StringBuilder result = new StringBuilder();
+        int indent = 0;
+        boolean inQuotes = false;
+
+        for (char c : json.toCharArray()) {
+            if (c == '"' && (result.length() == 0 || result.charAt(result.length() - 1) != '\\')) {
+                inQuotes = !inQuotes;
+                result.append(c);
+            } else if (!inQuotes && (c == '{' || c == '[')) {
+                result.append(c).append("\n");
+                indent += 2;
+                addIndentation(result, indent);
+            } else if (!inQuotes && (c == '}' || c == ']')) {
+                result.append("\n");
+                indent -= 2;
+                addIndentation(result, indent);
+                result.append(c);
+            } else if (!inQuotes && c == ',') {
+                result.append(c).append("\n");
+                addIndentation(result, indent);
+            } else if (!inQuotes && c == ':') {
+                result.append(c).append(" ");
+            } else {
+                result.append(c);
+            }
+        }
+
+        return result.toString();
+    }
+
+    private static void addIndentation(StringBuilder builder, int indent) {
+        for (int i = 0; i < indent; i++) {
+            builder.append(" ");
+        }
+    }
+
     private static String cleanHtmlContent(String html) {
         if (html == null || html.isEmpty()) {
             return "";
         }
 
+        // Remove doctype declaration
         html = html.replaceAll("<!DOCTYPE[^>]*>", "");
+
+        // Remove script and style sections completely with their content
         html = html.replaceAll("(?s)<script.*?</script>", "");
         html = html.replaceAll("(?s)<style.*?</style>", "");
+
+        // Remove HTML comments
         html = html.replaceAll("(?s)<!--.*?-->", "");
+
+        // Remove all HTML tags
         html = html.replaceAll("<[^>]*>", " ");
 
+        // Convert common HTML entities
         html = html.replaceAll("&lt;", "<")
                 .replaceAll("&gt;", ">")
                 .replaceAll("&amp;", "&")
@@ -342,9 +426,16 @@ public class Go2Web {
                 .replaceAll("&#[0-9]+;", "")
                 .replaceAll("&[a-zA-Z]+;", " ");
 
+        // Clean up excessive whitespace
         html = html.replaceAll("\\s+", " ");
 
+        // Add line breaks at sentences to improve readability
         html = html.replaceAll("\\. ", ".\n");
+        html = html.replaceAll("\\! ", "!\n");
+        html = html.replaceAll("\\? ", "?\n");
+
+        // Remove any leftover control or special characters
+        html = html.replaceAll("[\\p{C}]", "");
 
         return html.trim();
     }
