@@ -47,7 +47,7 @@ public class Go2Web {
                 url = "http://" + url;
             }
             HttpResponse response = makeHttpRequest(url);
-            System.out.println(response.body);
+            System.out.println(cleanHtmlContent(response.body));
         } catch (Exception e) {
             System.err.println("Error making HTTP request: " + e.getMessage());
             e.printStackTrace();
@@ -102,6 +102,33 @@ public class Go2Web {
                 socket.close();
             }
         }
+    }
+
+    private static String cleanHtmlContent(String html) {
+        if (html == null || html.isEmpty()) {
+            return "";
+        }
+
+        html = html.replaceAll("<!DOCTYPE[^>]*>", "");
+        html = html.replaceAll("(?s)<script.*?</script>", "");
+        html = html.replaceAll("(?s)<style.*?</style>", "");
+        html = html.replaceAll("(?s)<!--.*?-->", "");
+        html = html.replaceAll("<[^>]*>", " ");
+
+        html = html.replaceAll("&lt;", "<")
+                .replaceAll("&gt;", ">")
+                .replaceAll("&amp;", "&")
+                .replaceAll("&quot;", "\"")
+                .replaceAll("&apos;", "'")
+                .replaceAll("&nbsp;", " ")
+                .replaceAll("&#[0-9]+;", "")
+                .replaceAll("&[a-zA-Z]+;", " ");
+
+        html = html.replaceAll("\\s+", " ");
+
+        html = html.replaceAll("\\. ", ".\n");
+
+        return html.trim();
     }
 
     static class HttpResponse {
