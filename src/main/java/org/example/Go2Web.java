@@ -1,5 +1,11 @@
 package org.example;
 
+import java.io.*;
+import java.net.Socket;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
+
 public class Go2Web {
     public static void main(String[] args) {
         if (args.length == 0 || (args.length == 1 && args[0].equals("-h"))) {
@@ -13,7 +19,7 @@ public class Go2Web {
 
             switch (option) {
                 case "-u":
-                    System.out.println("URL option is not implemented yet.");
+                    handleUrlOption(value);
                     break;
                 case "-s":
                     System.out.println("Search option is not implemented yet.");
@@ -33,5 +39,78 @@ public class Go2Web {
         System.out.println("go2web -u <URL>         # make an HTTP request to the specified URL and print the response");
         System.out.println("go2web -s <search-term> # make an HTTP request to search the term using your favorite search engine and print top 10 results");
         System.out.println("go2web -h               # show this help");
+    }
+
+    private static void handleUrlOption(String url) {
+        try {
+            if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                url = "http://" + url;
+            }
+            HttpResponse response = makeHttpRequest(url);
+            System.out.println(response.body);
+        } catch (Exception e) {
+            System.err.println("Error making HTTP request: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private static HttpResponse makeHttpRequest(String urlString) throws IOException, URISyntaxException {
+        URI uri = new URI(urlString);
+        String host = uri.getHost();
+        int port = uri.getPort() == -1 ? 80 : uri.getPort();
+        String path = uri.getRawPath().isEmpty() ? "/" : uri.getRawPath();
+        if (uri.getRawQuery() != null) {
+            path += "?" + uri.getRawQuery();
+        }
+
+        Socket socket = null;
+        try {
+            socket = new Socket(host, port);
+
+            String request = "GET " + path + " HTTP/1.1\r\n" +
+                    "Host: " + host + "\r\n" +
+                    "User-Agent: go2web/1.0\r\n" +
+                    "Connection: close\r\n\r\n";
+
+            OutputStream out = socket.getOutputStream();
+            out.write(request.getBytes(StandardCharsets.UTF_8));
+            out.flush();
+
+            InputStream in = socket.getInputStream();
+            BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
+
+            StringBuilder headerBuilder = new StringBuilder();
+            StringBuilder bodyBuilder = new StringBuilder();
+            String line;
+            boolean isHeader = true;
+
+            while ((line = reader.readLine()) != null) {
+                if (isHeader) {
+                    if (line.isEmpty()) {
+                        isHeader = false;
+                    } else {
+                        headerBuilder.append(line).append("\r\n");
+                    }
+                } else {
+                    bodyBuilder.append(line).append("\n");
+                }
+            }
+
+            return new HttpResponse(headerBuilder.toString(), bodyBuilder.toString());
+        } finally {
+            if (socket != null) {
+                socket.close();
+            }
+        }
+    }
+
+    static class HttpResponse {
+        String headers;
+        String body;
+
+        HttpResponse(String headers, String body) {
+            this.headers = headers;
+            this.body = body;
+        }
     }
 }
