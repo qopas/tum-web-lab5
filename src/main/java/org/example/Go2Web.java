@@ -5,8 +5,14 @@ import java.net.Socket;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
 
 public class Go2Web {
+    private static final int MAX_REDIRECTS = 5;
+
     public static void main(String[] args) {
         if (args.length == 0 || (args.length == 1 && args[0].equals("-h"))) {
             printHelp();
@@ -46,7 +52,7 @@ public class Go2Web {
             if (!url.startsWith("http://") && !url.startsWith("https://")) {
                 url = "http://" + url;
             }
-            HttpResponse response = makeHttpRequest(url);
+            HttpResponse response = makeHttpRequest(url, 0);
             System.out.println(cleanHtmlContent(response.body));
         } catch (Exception e) {
             System.err.println("Error making HTTP request: " + e.getMessage());
@@ -54,10 +60,14 @@ public class Go2Web {
         }
     }
 
-    private static HttpResponse makeHttpRequest(String urlString) throws IOException, URISyntaxException {
+    private static HttpResponse makeHttpRequest(String urlString, int redirectCount) throws IOException, URISyntaxException {
+        if (redirectCount > MAX_REDIRECTS) {
+            throw new IOException("Too many redirects");
+        }
+
         URI uri = new URI(urlString);
         String host = uri.getHost();
-        int port = uri.getPort() == -1 ? 80 : uri.getPort();
+        int port = uri.getPort() == -1 ? (uri.getScheme().equals("https") ? 443 : 80) : uri.getPort();
         String path = uri.getRawPath().isEmpty() ? "/" : uri.getRawPath();
         if (uri.getRawQuery() != null) {
             path += "?" + uri.getRawQuery();
@@ -65,11 +75,17 @@ public class Go2Web {
 
         Socket socket = null;
         try {
-            socket = new Socket(host, port);
+            if (uri.getScheme().equals("https")) {
+                SSLSocketFactory sslSocketFactory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+                socket = sslSocketFactory.createSocket(host, port);
+            } else {
+                socket = new Socket(host, port);
+            }
 
             String request = "GET " + path + " HTTP/1.1\r\n" +
                     "Host: " + host + "\r\n" +
-                    "User-Agent: go2web/1.0\r\n" +
+                    "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36\r\n" +
+                    "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n" +
                     "Connection: close\r\n\r\n";
 
             OutputStream out = socket.getOutputStream();
@@ -77,31 +93,54 @@ public class Go2Web {
             out.flush();
 
             InputStream in = socket.getInputStream();
-            BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
 
-            StringBuilder headerBuilder = new StringBuilder();
-            StringBuilder bodyBuilder = new StringBuilder();
-            String line;
-            boolean isHeader = true;
+            ByteArrayOutputStream responseBytes = new ByteArrayOutputStream();
+            byte[] buffer = new byte[4096];
+            int bytesRead;
+            while ((bytesRead = in.read(buffer)) != -1) {
+                responseBytes.write(buffer, 0, bytesRead);
+            }
 
-            while ((line = reader.readLine()) != null) {
-                if (isHeader) {
-                    if (line.isEmpty()) {
-                        isHeader = false;
-                    } else {
-                        headerBuilder.append(line).append("\r\n");
+            String fullResponse = responseBytes.toString(StandardCharsets.UTF_8.name());
+
+            int headerEnd = fullResponse.indexOf("\r\n\r\n");
+            if (headerEnd == -1) {
+                throw new IOException("Invalid HTTP response format");
+            }
+
+            String headers = fullResponse.substring(0, headerEnd + 4);
+            String body = fullResponse.substring(headerEnd + 4);
+
+            if (headers.contains("HTTP/1.1 301") || headers.contains("HTTP/1.1 302") ||
+                    headers.contains("HTTP/1.1 303") || headers.contains("HTTP/1.1 307") ||
+                    headers.contains("HTTP/1.1 308") ||
+                    headers.contains("HTTP/1.0 301") || headers.contains("HTTP/1.0 302")) {
+
+                String locationHeader = extractHeader(headers, "Location");
+                if (locationHeader != null) {
+                    if (locationHeader.startsWith("/")) {
+                        locationHeader = uri.getScheme() + "://" + uri.getHost() + locationHeader;
                     }
-                } else {
-                    bodyBuilder.append(line).append("\n");
+                    System.out.println("Redirecting to: " + locationHeader);
+                    return makeHttpRequest(locationHeader, redirectCount + 1);
                 }
             }
 
-            return new HttpResponse(headerBuilder.toString(), bodyBuilder.toString());
+            return new HttpResponse(headers, body);
         } finally {
             if (socket != null) {
                 socket.close();
             }
         }
+    }
+
+    private static String extractHeader(String headers, String headerName) {
+        Pattern pattern = Pattern.compile(headerName + ": (.+?)\\r\\n", Pattern.CASE_INSENSITIVE);
+        Matcher matcher = pattern.matcher(headers);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+        return null;
     }
 
     private static String cleanHtmlContent(String html) {
